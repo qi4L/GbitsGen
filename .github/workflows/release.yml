@@ -2,8 +2,10 @@ name: Build & Release
 
 on:
   push:
-    tags:
-      - '*'
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+    branches: [master]
 
 permissions:
   contents: write
@@ -39,7 +41,8 @@ jobs:
             libxinerama-dev \
             libxi-dev \
             libxxf86vm-dev \
-            libgles2-mesa-dev
+            libgles2-mesa-dev \
+            p7zip-full
 
       - uses: actions/setup-go@v5
         with:
@@ -48,20 +51,13 @@ jobs:
       - name: Build
         run: CGO_ENABLED=1 go build -ldflags="-s -w" -o GbitsGen-linux-amd64 .
 
-      - name: Install UPX
-        run: |
-          UPX_VERSION=5.0.0
-          curl -fsSL "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz" -o upx.tar.xz
-          tar -xf upx.tar.xz
-          sudo mv upx-${UPX_VERSION}-amd64_linux/upx /usr/local/bin/
-
-      - name: UPX pack
-        run: upx --best --lzma GbitsGen-linux-amd64
+      - name: 7z compress
+        run: 7z a -mx=9 GbitsGen-linux-amd64.7z GbitsGen-linux-amd64
 
       - uses: actions/upload-artifact@v4
         with:
           name: GbitsGen-linux-amd64
-          path: GbitsGen-linux-amd64
+          path: GbitsGen-linux-amd64.7z
 
   build-macos-amd64:
     runs-on: macos-13
@@ -75,20 +71,16 @@ jobs:
       - name: Build
         run: CGO_ENABLED=1 go build -ldflags="-s -w" -o GbitsGen-darwin-amd64 .
 
-      - name: Install UPX
-        run: |
-          UPX_VERSION=5.0.0
-          curl -fsSL "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_macos.tar.xz" -o upx.tar.xz
-          tar -xf upx.tar.xz
-          sudo mv upx-${UPX_VERSION}-amd64_macos/upx /usr/local/bin/
+      - name: Install 7z
+        run: brew install p7zip
 
-      - name: UPX pack (best-effort, skip if unsupported)
-        run: upx --best --lzma GbitsGen-darwin-amd64 || echo "UPX skipped for macOS, binary left uncompressed"
+      - name: 7z compress
+        run: 7z a -mx=9 GbitsGen-darwin-amd64.7z GbitsGen-darwin-amd64
 
       - uses: actions/upload-artifact@v4
         with:
           name: GbitsGen-darwin-amd64
-          path: GbitsGen-darwin-amd64
+          path: GbitsGen-darwin-amd64.7z
 
   build-macos-arm64:
     runs-on: macos-latest
@@ -102,20 +94,16 @@ jobs:
       - name: Build
         run: CGO_ENABLED=1 go build -ldflags="-s -w" -o GbitsGen-darwin-arm64 .
 
-      - name: Install UPX
-        run: |
-          UPX_VERSION=5.0.0
-          curl -fsSL "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-arm64_macos.tar.xz" -o upx.tar.xz
-          tar -xf upx.tar.xz
-          sudo mv upx-${UPX_VERSION}-arm64_macos/upx /usr/local/bin/
+      - name: Install 7z
+        run: brew install p7zip
 
-      - name: UPX pack (best-effort, skip if unsupported)
-        run: upx --best --lzma GbitsGen-darwin-arm64 || echo "UPX skipped for macOS, binary left uncompressed"
+      - name: 7z compress
+        run: 7z a -mx=9 GbitsGen-darwin-arm64.7z GbitsGen-darwin-arm64
 
       - uses: actions/upload-artifact@v4
         with:
           name: GbitsGen-darwin-arm64
-          path: GbitsGen-darwin-arm64
+          path: GbitsGen-darwin-arm64.7z
 
   build-windows:
     runs-on: windows-latest
@@ -132,6 +120,7 @@ jobs:
           install: >-
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-pkg-config
+            p7zip
 
       - uses: actions/setup-go@v5
         with:
@@ -143,20 +132,55 @@ jobs:
           CC: gcc
         run: go build -ldflags="-s -w -H windowsgui" -o GbitsGen-windows-amd64.exe .
 
-      - name: Install UPX
-        run: |
-          UPX_VERSION=5.0.0
-          curl -fsSL "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-win64.zip" -o upx.zip
-          unzip -o upx.zip
-          mv upx-${UPX_VERSION}-win64/upx.exe /usr/bin/
-
-      - name: UPX pack
-        run: upx --best --lzma GbitsGen-windows-amd64.exe
+      - name: 7z compress
+        run: 7z a -mx=9 GbitsGen-windows-amd64.7z GbitsGen-windows-amd64.exe
 
       - uses: actions/upload-artifact@v4
         with:
           name: GbitsGen-windows-amd64
-          path: GbitsGen-windows-amd64.exe
+          path: GbitsGen-windows-amd64.7z
+
+  release-latest:
+    needs: [test, build-linux, build-macos-amd64, build-macos-arm64, build-windows]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: GbitsGen-*
+          merge-multiple: false
+          path: artifacts
+
+      - name: Delete old latest release
+        run: gh release delete latest --cleanup-tag -y || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          ls -R
+          sha256sum GbitsGen-linux-amd64/GbitsGen-linux-amd64.7z          >  checksums-latest.txt
+          sha256sum GbitsGen-darwin-amd64/GbitsGen-darwin-amd64.7z        >> checksums-latest.txt
+          sha256sum GbitsGen-darwin-arm64/GbitsGen-darwin-arm64.7z        >> checksums-latest.txt
+          sha256sum GbitsGen-windows-amd64/GbitsGen-windows-amd64.7z      >> checksums-latest.txt
+          cat checksums-latest.txt
+
+      - name: Create latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest Build
+          body: "Automated build from `main` branch.\n\nCommit: ${{ github.sha }}\nDate: ${{ github.event.head_commit.timestamp }}"
+          files: |
+            artifacts/GbitsGen-linux-amd64/GbitsGen-linux-amd64.7z
+            artifacts/GbitsGen-darwin-amd64/GbitsGen-darwin-amd64.7z
+            artifacts/GbitsGen-darwin-arm64/GbitsGen-darwin-arm64.7z
+            artifacts/GbitsGen-windows-amd64/GbitsGen-windows-amd64.7z
+            artifacts/checksums-latest.txt
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   release:
     needs: [test, build-linux, build-macos-amd64, build-macos-arm64, build-windows]
@@ -174,20 +198,20 @@ jobs:
           VERSION=${GITHUB_REF#refs/tags/}
           cd artifacts
           ls -R
-          sha256sum GbitsGen-linux-amd64/GbitsGen-linux-amd64       >  checksums-${VERSION}.txt
-          sha256sum GbitsGen-darwin-amd64/GbitsGen-darwin-amd64     >> checksums-${VERSION}.txt
-          sha256sum GbitsGen-darwin-arm64/GbitsGen-darwin-arm64     >> checksums-${VERSION}.txt
-          sha256sum GbitsGen-windows-amd64/GbitsGen-windows-amd64.exe >> checksums-${VERSION}.txt
+          sha256sum GbitsGen-linux-amd64/GbitsGen-linux-amd64.7z          >  checksums-${VERSION}.txt
+          sha256sum GbitsGen-darwin-amd64/GbitsGen-darwin-amd64.7z        >> checksums-${VERSION}.txt
+          sha256sum GbitsGen-darwin-arm64/GbitsGen-darwin-arm64.7z        >> checksums-${VERSION}.txt
+          sha256sum GbitsGen-windows-amd64/GbitsGen-windows-amd64.7z      >> checksums-${VERSION}.txt
           cat checksums-${VERSION}.txt
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/GbitsGen-linux-amd64/GbitsGen-linux-amd64
-            artifacts/GbitsGen-darwin-amd64/GbitsGen-darwin-amd64
-            artifacts/GbitsGen-darwin-arm64/GbitsGen-darwin-arm64
-            artifacts/GbitsGen-windows-amd64/GbitsGen-windows-amd64.exe
+            artifacts/GbitsGen-linux-amd64/GbitsGen-linux-amd64.7z
+            artifacts/GbitsGen-darwin-amd64/GbitsGen-darwin-amd64.7z
+            artifacts/GbitsGen-darwin-arm64/GbitsGen-darwin-arm64.7z
+            artifacts/GbitsGen-windows-amd64/GbitsGen-windows-amd64.7z
             artifacts/checksums-*.txt
           generate_release_notes: true
         env:
