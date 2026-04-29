@@ -130,9 +130,12 @@ jobs:
         env:
           CGO_ENABLED: "1"
           CC: gcc
+          MSYS2_PATH_TYPE: inherit
         run: go build -ldflags="-s -w -H windowsgui" -o GbitsGen-windows-amd64.exe .
 
       - name: 7z compress
+        env:
+          MSYS2_PATH_TYPE: inherit
         run: 7z a -mx=9 GbitsGen-windows-amd64.7z GbitsGen-windows-amd64.exe
 
       - uses: actions/upload-artifact@v4
@@ -142,7 +145,7 @@ jobs:
 
   release-latest:
     needs: [test, build-linux, build-macos-amd64, build-macos-arm64, build-windows]
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -171,7 +174,7 @@ jobs:
         with:
           tag_name: latest
           name: Latest Build
-          body: "Automated build from `main` branch.\n\nCommit: ${{ github.sha }}\nDate: ${{ github.event.head_commit.timestamp }}"
+          body: "Automated build from `master` branch.\n\nCommit: ${{ github.sha }}\nDate: ${{ github.event.head_commit.timestamp }}"
           files: |
             artifacts/GbitsGen-linux-amd64/GbitsGen-linux-amd64.7z
             artifacts/GbitsGen-darwin-amd64/GbitsGen-darwin-amd64.7z
