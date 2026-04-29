@@ -1,0 +1,194 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Lint
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1-mesa-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxi-dev \
+            libxxf86vm-dev \
+            libgles2-mesa-dev
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build
+        run: CGO_ENABLED=1 go build -ldflags="-s -w" -o GbitsGen-linux-amd64 .
+
+      - name: Install UPX
+        run: |
+          UPX_VERSION=5.0.0
+          curl -fsSL "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz" -o upx.tar.xz
+          tar -xf upx.tar.xz
+          sudo mv upx-${UPX_VERSION}-amd64_linux/upx /usr/local/bin/
+
+      - name: UPX pack
+        run: upx --best --lzma GbitsGen-linux-amd64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GbitsGen-linux-amd64
+          path: GbitsGen-linux-amd64
+
+  build-macos-amd64:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build
+        run: CGO_ENABLED=1 go build -ldflags="-s -w" -o GbitsGen-darwin-amd64 .
+
+      - name: Install UPX
+        run: |
+          UPX_VERSION=5.0.0
+          curl -fsSL "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_macos.tar.xz" -o upx.tar.xz
+          tar -xf upx.tar.xz
+          sudo mv upx-${UPX_VERSION}-amd64_macos/upx /usr/local/bin/
+
+      - name: UPX pack (best-effort, skip if unsupported)
+        run: upx --best --lzma GbitsGen-darwin-amd64 || echo "UPX skipped for macOS, binary left uncompressed"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GbitsGen-darwin-amd64
+          path: GbitsGen-darwin-amd64
+
+  build-macos-arm64:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build
+        run: CGO_ENABLED=1 go build -ldflags="-s -w" -o GbitsGen-darwin-arm64 .
+
+      - name: Install UPX
+        run: |
+          UPX_VERSION=5.0.0
+          curl -fsSL "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-arm64_macos.tar.xz" -o upx.tar.xz
+          tar -xf upx.tar.xz
+          sudo mv upx-${UPX_VERSION}-arm64_macos/upx /usr/local/bin/
+
+      - name: UPX pack (best-effort, skip if unsupported)
+        run: upx --best --lzma GbitsGen-darwin-arm64 || echo "UPX skipped for macOS, binary left uncompressed"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GbitsGen-darwin-arm64
+          path: GbitsGen-darwin-arm64
+
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: mingw64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-pkg-config
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build
+        env:
+          CGO_ENABLED: "1"
+          CC: gcc
+        run: go build -ldflags="-s -w -H windowsgui" -o GbitsGen-windows-amd64.exe .
+
+      - name: Install UPX
+        run: |
+          UPX_VERSION=5.0.0
+          curl -fsSL "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-win64.zip" -o upx.zip
+          unzip -o upx.zip
+          mv upx-${UPX_VERSION}-win64/upx.exe /usr/bin/
+
+      - name: UPX pack
+        run: upx --best --lzma GbitsGen-windows-amd64.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GbitsGen-windows-amd64
+          path: GbitsGen-windows-amd64.exe
+
+  release:
+    needs: [test, build-linux, build-macos-amd64, build-macos-arm64, build-windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: GbitsGen-*
+          merge-multiple: false
+          path: artifacts
+
+      - name: Generate checksums
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          cd artifacts
+          ls -R
+          sha256sum GbitsGen-linux-amd64/GbitsGen-linux-amd64       >  checksums-${VERSION}.txt
+          sha256sum GbitsGen-darwin-amd64/GbitsGen-darwin-amd64     >> checksums-${VERSION}.txt
+          sha256sum GbitsGen-darwin-arm64/GbitsGen-darwin-arm64     >> checksums-${VERSION}.txt
+          sha256sum GbitsGen-windows-amd64/GbitsGen-windows-amd64.exe >> checksums-${VERSION}.txt
+          cat checksums-${VERSION}.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/GbitsGen-linux-amd64/GbitsGen-linux-amd64
+            artifacts/GbitsGen-darwin-amd64/GbitsGen-darwin-amd64
+            artifacts/GbitsGen-darwin-arm64/GbitsGen-darwin-arm64
+            artifacts/GbitsGen-windows-amd64/GbitsGen-windows-amd64.exe
+            artifacts/checksums-*.txt
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
